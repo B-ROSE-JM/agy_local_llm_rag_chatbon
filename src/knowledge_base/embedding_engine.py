@@ -66,26 +66,33 @@ class EmbeddingEngine:
             import os
 
             logger.info(f"폴백 임베딩 모델 로딩: {self.fallback_model_name}")
-            is_offline = os.environ.get("HF_HUB_OFFLINE") == "1"
-
-            try:
-                self._fallback_model = SentenceTransformer(
-                    self.fallback_model_name, local_files_only=True
-                )
-                logger.info("로컬 캐시에서 sentence-transformers 모델 로드 성공")
-            except Exception:
-                if is_offline:
-                    raise OSError("오프라인 모드. 로컬 모델 없음.")
-                import socket
-                logger.info("로컬 캐시 없음. huggingface.co 연결 확인 중...")
+            
+            # 로컬 디렉토리 경로가 존재하면 직접 로드
+            model_path = Path(self.fallback_model_name)
+            if model_path.exists() and model_path.is_dir():
+                logger.info(f"로컬 디렉토리 경로 감지: {model_path.resolve()}")
+                self._fallback_model = SentenceTransformer(str(model_path.resolve()))
+                logger.info("로컬 디렉토리에서 모델 로드 성공")
+            else:
+                is_offline = os.environ.get("HF_HUB_OFFLINE") == "1"
                 try:
-                    socket.create_connection(("huggingface.co", 443), timeout=3.0).close()
-                    logger.info("인터넷 연결 확인. 모델 다운로드 중...")
                     self._fallback_model = SentenceTransformer(
-                        self.fallback_model_name, local_files_only=False
+                        self.fallback_model_name, local_files_only=True
                     )
-                except Exception as conn_err:
-                    raise OSError(f"huggingface.co 연결 불가: {conn_err}")
+                    logger.info("로컬 캐시에서 sentence-transformers 모델 로드 성공")
+                except Exception:
+                    if is_offline:
+                        raise OSError("오프라인 모드. 로컬 모델 없음.")
+                    import socket
+                    logger.info("로컬 캐시 없음. huggingface.co 연결 확인 중...")
+                    try:
+                        socket.create_connection(("huggingface.co", 443), timeout=3.0).close()
+                        logger.info("인터넷 연결 확인. 모델 다운로드 중...")
+                        self._fallback_model = SentenceTransformer(
+                            self.fallback_model_name, local_files_only=False
+                        )
+                    except Exception as conn_err:
+                        raise OSError(f"huggingface.co 연결 불가: {conn_err}")
 
             test_emb = self._fallback_model.encode(["test"])
             self._embedding_dim = test_emb.shape[1]
