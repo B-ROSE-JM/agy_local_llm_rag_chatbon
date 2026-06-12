@@ -288,8 +288,31 @@ class EmbeddingEngine:
                     "server_response": last_body,
                 }
                 fail_report.append(fail_info)
+                
+                # 에러 폴더에 실패 청크 본문 저장
+                error_dir = Path("data/embedding_errors")
+                error_dir.mkdir(parents=True, exist_ok=True)
+                
+                # 고유 해시 생성 및 파일 저장
+                text_hash_val = hashlib.md5(orig_text.encode("utf-8")).hexdigest()[:8]
+                error_filename = f"error_chunk_{chunk_idx}_{text_hash_val}.txt"
+                error_filepath = error_dir / error_filename
+                
+                try:
+                    with open(error_filepath, "w", encoding="utf-8") as f:
+                        f.write(f"=== EMBEDDING ERROR DIAGNOSTICS ===\n")
+                        f.write(f"Chunk Index: {chunk_idx}\n")
+                        f.write(f"Text Length: {text_len} chars\n")
+                        f.write(f"HTTP Status: {last_status}\n")
+                        f.write(f"Server Response: {last_body}\n")
+                        f.write(f"===================================\n\n")
+                        f.write(orig_text)
+                    save_msg = f"실패 청크 저장 완료: {error_filepath.as_posix()}"
+                except Exception as save_err:
+                    save_msg = f"실패 청크 저장 실패 ({save_err})"
+
                 logger.warning(
-                    f"[청크 #{chunk_idx}] llama 서버 최종 실패. "
+                    f"[청크 #{chunk_idx}] llama 서버 최종 실패. {save_msg} | "
                     f"sentence-transformers 폴백 시도... "
                     f"| 텍스트길이={text_len}자 | 미리보기: {preview_log_str}"
                 )
