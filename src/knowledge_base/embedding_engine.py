@@ -9,6 +9,7 @@ import httpx
 import numpy as np
 from pathlib import Path
 from typing import List, Optional
+from src.utils.logging_utils import get_logger
 from config import (
     LLAMA_SERVER_URL,
     EMBEDDING_SERVER_URL,
