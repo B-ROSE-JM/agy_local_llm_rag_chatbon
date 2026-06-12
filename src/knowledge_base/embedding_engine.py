@@ -191,17 +191,24 @@ class EmbeddingEngine:
         """llama.cpp /v1/embeddings로 임베딩을 생성합니다."""
         import time
         all_embeddings = []
+        fail_report = []  # 실패 청크 진단 리포트
+
         for i in range(0, len(texts), BATCH_SIZE):
             batch = texts[i: i + BATCH_SIZE]
-            
+            chunk_idx = i // BATCH_SIZE  # 청크 순번
+            text_preview = batch[0][:80].replace('\n', ' ') if batch else ""
+            text_len = len(batch[0]) if batch else 0
+
             # 연속 요청 간의 짧은 딜레이 추가 (부하 분산)
             if i > 0:
                 time.sleep(0.1)
-                
+
             # 재시도 루프 (최대 3회)
             max_retries = 3
             success = False
-            
+            last_status = None
+            last_body = None
+
             for attempt in range(max_retries):
                 try:
                     response = httpx.post(
@@ -209,7 +216,7 @@ class EmbeddingEngine:
                         json={"model": self.model, "input": batch},
                         timeout=30.0,
                     )
-                    
+
                     if response.status_code == 200:
                         data = response.json()
                         for item in data.get("data", []):
@@ -217,23 +224,69 @@ class EmbeddingEngine:
                         success = True
                         break
                     else:
+                        last_status = response.status_code
+                        last_body = response.text[:300]  # 서버 응답 본문 (최대 300자)
                         logger.warning(
-                            f"임베딩 API 응답 오류 (코드 {response.status_code}, 시도 {attempt + 1}/{max_retries})"
+                            f"[청크 #{chunk_idx}] 임베딩 API 응답 오류 "
+                            f"(코드 {response.status_code}, 시도 {attempt + 1}/{max_retries}) "
+                            f"| 텍스트길이={text_len}자 | 미리보기: '{text_preview}...'"
                         )
+                        if attempt == 0:
+                            logger.debug(f"[청크 #{chunk_idx}] 서버 응답: {last_body}")
                 except Exception as e:
                     logger.warning(
-                        f"임베딩 API 연결 오류 ({e}, 시도 {attempt + 1}/{max_retries})"
+                        f"[청크 #{chunk_idx}] 임베딩 API 연결 오류 "
+                        f"({e}, 시도 {attempt + 1}/{max_retries}) "
+                        f"| 텍스트길이={text_len}자"
                     )
-                
+
                 # 실패 시 대기 후 재시도 (Exponential Backoff: 0.5초, 1.0초, 2.0초)
                 time.sleep(0.5 * (2 ** attempt))
-                
+
             if not success:
-                logger.error(f"임베딩 배치 {i} 최종 실패. 0-벡터로 채웁니다.")
-                for _ in batch:
-                    all_embeddings.append([0.0] * (self._embedding_dim or 768))
-                    
+                fail_info = {
+                    "chunk_idx": chunk_idx,
+                    "text_len": text_len,
+                    "preview": text_preview,
+                    "status": last_status,
+                    "server_response": last_body,
+                }
+                fail_report.append(fail_info)
+                logger.warning(
+                    f"[청크 #{chunk_idx}] llama 서버 최종 실패. "
+                    f"sentence-transformers 폴백 시도... "
+                    f"| 텍스트길이={text_len}자 | 미리보기: '{text_preview}...'"
+                )
+                try:
+                    fallback_embs = self._fallback_embed_single_batch(batch)
+                    all_embeddings.extend(fallback_embs)
+                    logger.info(f"[청크 #{chunk_idx}] sentence-transformers 폴백 성공")
+                except Exception as fb_err:
+                    logger.error(f"[청크 #{chunk_idx}] 폴백도 실패: {fb_err}. 0-벡터로 채웁니다.")
+                    for _ in batch:
+                        all_embeddings.append([0.0] * (self._embedding_dim or 768))
+
+        # 실패 요약 리포트
+        if fail_report:
+            logger.error(
+                f"=== 임베딩 실패 요약 === "
+                f"총 {len(texts)}개 중 {len(fail_report)}개 실패 | "
+                f"실패 청크: {[f['chunk_idx'] for f in fail_report]} | "
+                f"텍스트 길이 범위: {min(f['text_len'] for f in fail_report)}"
+                f"~{max(f['text_len'] for f in fail_report)}자 | "
+                f"HTTP 상태코드: {set(f['status'] for f in fail_report)}"
+            )
+
         return np.array(all_embeddings, dtype=np.float32)
+
+    def _fallback_embed_single_batch(self, texts: List[str]) -> List[List[float]]:
+        """llama 서버 실패 시 sentence-transformers로 개별 배치를 폴백 임베딩합니다."""
+        if self._fallback_model is None:
+            self._load_fallback_model()
+        embeddings = self._fallback_model.encode(
+            texts, normalize_embeddings=True
+        )
+        return embeddings.tolist()
 
     def _embed_with_sentence_transformers(self, texts: List[str]) -> np.ndarray:
         """sentence-transformers로 임베딩을 생성합니다."""
