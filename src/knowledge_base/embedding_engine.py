@@ -19,7 +19,7 @@ from config import (
 
 logger = get_logger("embedding_engine")
 
-BATCH_SIZE = 8
+BATCH_SIZE = 1
 
 
 class EmbeddingEngine:
@@ -189,23 +189,50 @@ class EmbeddingEngine:
 
     def _embed_with_llama(self, texts: List[str]) -> np.ndarray:
         """llama.cpp /v1/embeddings로 임베딩을 생성합니다."""
+        import time
         all_embeddings = []
         for i in range(0, len(texts), BATCH_SIZE):
             batch = texts[i: i + BATCH_SIZE]
-            try:
-                response = httpx.post(
-                    f"{self.base_url}/embeddings",
-                    json={"model": self.model, "input": batch},
-                    timeout=60.0,
-                )
-                response.raise_for_status()
-                data = response.json()
-                for item in data.get("data", []):
-                    all_embeddings.append(item.get("embedding", []))
-            except Exception as e:
-                logger.error(f"임베딩 배치 {i} 오류: {e}")
+            
+            # 연속 요청 간의 짧은 딜레이 추가 (부하 분산)
+            if i > 0:
+                time.sleep(0.1)
+                
+            # 재시도 루프 (최대 3회)
+            max_retries = 3
+            success = False
+            
+            for attempt in range(max_retries):
+                try:
+                    response = httpx.post(
+                        f"{self.base_url}/embeddings",
+                        json={"model": self.model, "input": batch},
+                        timeout=30.0,
+                    )
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        for item in data.get("data", []):
+                            all_embeddings.append(item.get("embedding", []))
+                        success = True
+                        break
+                    else:
+                        logger.warning(
+                            f"임베딩 API 응답 오류 (코드 {response.status_code}, 시도 {attempt + 1}/{max_retries})"
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"임베딩 API 연결 오류 ({e}, 시도 {attempt + 1}/{max_retries})"
+                    )
+                
+                # 실패 시 대기 후 재시도 (Exponential Backoff: 0.5초, 1.0초, 2.0초)
+                time.sleep(0.5 * (2 ** attempt))
+                
+            if not success:
+                logger.error(f"임베딩 배치 {i} 최종 실패. 0-벡터로 채웁니다.")
                 for _ in batch:
                     all_embeddings.append([0.0] * (self._embedding_dim or 768))
+                    
         return np.array(all_embeddings, dtype=np.float32)
 
     def _embed_with_sentence_transformers(self, texts: List[str]) -> np.ndarray:
