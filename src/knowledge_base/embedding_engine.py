@@ -19,7 +19,7 @@ from config import (
 
 logger = get_logger("embedding_engine")
 
-BATCH_SIZE = 8
+BATCH_SIZE = 1
 
 
 class EmbeddingEngine:
