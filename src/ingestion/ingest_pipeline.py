@@ -311,3 +311,30 @@ def remove_file_from_index(file_name: str) -> bool:
     _save_index(index)
     logger.info(f"'{file_name}' 인덱스 및 벡터 삭제 완료")
     return True
+
+
+def clear_all_indexes() -> bool:
+    """모든 인덱스(ChromaDB 컬렉션 및 로컬 파일 인덱스)를 삭제하고 연구노트 디렉토리를 비웁니다."""
+    try:
+        # 1. ChromaDB 전체 삭제
+        vs = VectorStore(persist_dir=CHROMADB_PERSIST_DIR, collection_name=CHROMADB_COLLECTION)
+        vs.delete_all()
+
+        # 2. 로컬 파일 인덱스 초기화
+        _save_index({"files": {}})
+
+        # 3. 연구노트 폴더 비우기
+        if RESEARCH_NOTES_DIR.exists():
+            for item in RESEARCH_NOTES_DIR.iterdir():
+                if item.is_file():
+                    item.unlink()
+                elif item.is_dir():
+                    import shutil
+                    shutil.rmtree(item)
+
+        logger.info("모든 인덱스 및 업로드된 파일 초기화 완료")
+        return True
+    except Exception as e:
+        logger.error(f"인덱스 초기화 실패: {e}")
+        return False
+

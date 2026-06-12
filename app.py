@@ -35,6 +35,7 @@ from src.ingestion.ingest_pipeline import (
     ingest_directory,
     get_ingest_status,
     remove_file_from_index,
+    clear_all_indexes,
 )
 from src.rag.qa_chain import QAChain
 from src.utils.file_viewer import format_source_badge, generate_file_link
@@ -498,6 +499,18 @@ with tab_docs:
                 st.rerun()
             else:
                 st.error("디렉토리가 존재하지 않습니다.")
+
+        st.divider()
+        st.markdown("#### 🗑️ 전체 데이터 초기화")
+        st.caption("ChromaDB 데이터와 모든 연구노트 문서를 일괄 삭제하고 초기 상태로 되돌립니다.")
+        if st.button("🔥 전체 초기화 실행", use_container_width=True):
+            with st.spinner("데이터 초기화 진행 중..."):
+                if clear_all_indexes():
+                    st.success("데이터베이스 및 연구노트 폴더가 초기화되었습니다.")
+                    st.session_state.qa_chain = None
+                    st.rerun()
+                else:
+                    st.error("초기화 중 오류가 발생했습니다.")
 
     # ── 인덱스 현황 ──
     st.divider()
