@@ -8,18 +8,17 @@ from openai import OpenAI
 from typing import Dict, Any, Optional, Generator
 from src.utils.logging_utils import get_logger
 
-logger = get_logger("llama_client")
+from config import LLAMA_SERVER_URL, LLAMA_MODEL_NAME
 
-DEFAULT_ENDPOINT = "http://127.0.0.1:8080/v1"
-DEFAULT_MODEL = "local-model"
+logger = get_logger("llama_client")
 
 
 class LlamaClient:
     """llama.cpp 로컬 LLM 클라이언트."""
 
-    def __init__(self, base_url: str = DEFAULT_ENDPOINT, model: str = DEFAULT_MODEL):
-        self.base_url = base_url
-        self.model = model
+    def __init__(self, base_url: Optional[str] = None, model: Optional[str] = None):
+        self.base_url = base_url or LLAMA_SERVER_URL
+        self.model = model or LLAMA_MODEL_NAME
         self.client = OpenAI(
             base_url=self.base_url,
             api_key="sk-no-key-required",

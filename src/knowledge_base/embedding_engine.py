@@ -9,11 +9,15 @@ import httpx
 import numpy as np
 from pathlib import Path
 from typing import List, Optional
-from src.utils.logging_utils import get_logger
+from config import (
+    LLAMA_SERVER_URL,
+    EMBEDDING_SERVER_URL,
+    USE_EMBEDDING_SERVER,
+    EMBEDDING_FALLBACK_MODEL,
+)
 
 logger = get_logger("embedding_engine")
 
-DEFAULT_ENDPOINT = "http://127.0.0.1:8080/v1"
 BATCH_SIZE = 8
 
 
@@ -22,13 +26,22 @@ class EmbeddingEngine:
 
     def __init__(
         self,
-        base_url: str = DEFAULT_ENDPOINT,
+        base_url: Optional[str] = None,
         model: str = "local-model",
-        fallback_model_name: str = "intfloat/multilingual-e5-large",
+        fallback_model_name: Optional[str] = None,
     ):
-        self.base_url = base_url
+        # 임베딩 전용 서버 설정이 켜져 있으면 EMBEDDING_SERVER_URL 사용, 아니면 일반 LLAMA_SERVER_URL 사용
+        if base_url is None:
+            if USE_EMBEDDING_SERVER:
+                self.base_url = EMBEDDING_SERVER_URL
+                logger.info(f"임베딩 전용 서버 사용 예정: {self.base_url}")
+            else:
+                self.base_url = LLAMA_SERVER_URL
+        else:
+            self.base_url = base_url
+
         self.model = model
-        self.fallback_model_name = fallback_model_name
+        self.fallback_model_name = fallback_model_name or EMBEDDING_FALLBACK_MODEL
         self._fallback_model = None
         self._use_fallback = False
         self._use_tfidf = False

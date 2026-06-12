@@ -7,8 +7,15 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent
 
 # ── llama.cpp 서버 설정 ──
+# 1. Q&A/답변 생성용 LLM 서버
 LLAMA_SERVER_URL = "http://127.0.0.1:8080/v1"
 LLAMA_MODEL_NAME = "local-model"
+
+# 2. 임베딩 생성 전용 서버 (옵션)
+# nomic-embed-text 등 임베딩 전용 모델을 별도 포트(예: 8081)로 띄울 때 사용합니다.
+# 사용하지 않거나 꺼져 있으면 자동으로 sentence-transformers 로컬 오프라인 모델로 폴백합니다.
+EMBEDDING_SERVER_URL = "http://127.0.0.1:8081/v1"
+USE_EMBEDDING_SERVER = True  # 임베딩 전용 서버 사용 여부 (기본: 활성화)
 
 # ── 임베딩 설정 ──
 EMBEDDING_FALLBACK_MODEL = "intfloat/multilingual-e5-large"
