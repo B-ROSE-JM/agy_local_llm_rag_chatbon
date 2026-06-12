@@ -187,6 +187,22 @@ class EmbeddingEngine:
         result = self.embed_texts([text])
         return result[0] if len(result) > 0 else np.array([])
 
+    @staticmethod
+    def _sanitize_for_llama(text: str) -> str:
+        """
+        llama.cpp 서버로 보내기 전에 특수 토큰으로 오인될 수 있는 패턴을 이스케이프합니다.
+        
+        [CONFIDENTIAL], [INST], [SYSTEM] 등 대괄호 태그가 llama.cpp의
+        채팅 템플릿 파서와 충돌하여 500 에러를 유발하는 문제를 방지합니다.
+        """
+        import re
+        # 대괄호로 감싼 대문자 태그 패턴 → 대괄호 제거하고 텍스트만 남김
+        # 예: [CONFIDENTIAL] → CONFIDENTIAL, [INST] → INST
+        text = re.sub(r'\[([A-Z][A-Z0-9_/]{0,30})\]', r'\1', text)
+        # 한글 대괄호 태그도 처리: [대외비], [기밀] 등
+        text = re.sub(r'\[(대외비|기밀|비밀|사내한|극비)\]', r'\1', text)
+        return text
+
     def _embed_with_llama(self, texts: List[str]) -> np.ndarray:
         """llama.cpp /v1/embeddings로 임베딩을 생성합니다."""
         import time
@@ -195,6 +211,8 @@ class EmbeddingEngine:
 
         for i in range(0, len(texts), BATCH_SIZE):
             batch = texts[i: i + BATCH_SIZE]
+            # llama 서버 전송용: 특수 토큰 태그 이스케이프
+            sanitized_batch = [self._sanitize_for_llama(t) for t in batch]
             chunk_idx = i // BATCH_SIZE  # 청크 순번
             text_preview = batch[0][:80].replace('\n', ' ') if batch else ""
             text_len = len(batch[0]) if batch else 0
@@ -213,7 +231,7 @@ class EmbeddingEngine:
                 try:
                     response = httpx.post(
                         f"{self.base_url}/embeddings",
-                        json={"model": self.model, "input": batch},
+                        json={"model": self.model, "input": sanitized_batch},
                         timeout=30.0,
                     )
 
