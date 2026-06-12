@@ -196,11 +196,13 @@ class EmbeddingEngine:
         채팅 템플릿 파서와 충돌하여 500 에러를 유발하는 문제를 방지합니다.
         """
         import re
-        # 대괄호로 감싼 대문자 태그 패턴 → 대괄호 제거하고 텍스트만 남김
-        # 예: [CONFIDENTIAL] → CONFIDENTIAL, [INST] → INST
-        text = re.sub(r'\[([A-Z][A-Z0-9_/]{0,30})\]', r'\1', text)
-        # 한글 대괄호 태그도 처리: [대외비], [기밀] 등
-        text = re.sub(r'\[(대외비|기밀|비밀|사내한|극비)\]', r'\1', text)
+        if not text:
+            return ""
+        # 대괄호로 감싼 영문/숫자 태그 패턴 (대소문자 무관, 공백 허용) -> 대괄호 제거 후 공백 제거
+        # 예: [CONFIDENTIAL] -> CONFIDENTIAL, [Confidential] -> Confidential, [INST] -> INST
+        text = re.sub(r'\[\s*([a-zA-Z][a-zA-Z0-9_/\s-]{0,30})\s*\]', lambda m: m.group(1).strip(), text)
+        # 한글 대괄호 태그도 처리 (대외비, 기밀, 비밀, 사내한, 극비 등)
+        text = re.sub(r'\[\s*(대외비|기밀|비밀|사내한|극비)\s*\]', lambda m: m.group(1).strip(), text)
         return text
 
     def _embed_with_llama(self, texts: List[str]) -> np.ndarray:
@@ -214,8 +216,19 @@ class EmbeddingEngine:
             # llama 서버 전송용: 특수 토큰 태그 이스케이프
             sanitized_batch = [self._sanitize_for_llama(t) for t in batch]
             chunk_idx = i // BATCH_SIZE  # 청크 순번
-            text_preview = batch[0][:80].replace('\n', ' ') if batch else ""
-            text_len = len(batch[0]) if batch else 0
+            
+            orig_text = batch[0] if batch else ""
+            sanit_text = sanitized_batch[0] if sanitized_batch else ""
+            text_len = len(orig_text)
+            
+            text_preview_orig = orig_text[:80].replace('\n', ' ')
+            text_preview_sanit = sanit_text[:80].replace('\n', ' ')
+            
+            # 로그 미리보기 문구: 변경 사항이 있으면 원본->순화 표기
+            if text_preview_orig != text_preview_sanit:
+                preview_log_str = f"'{text_preview_orig}' -> '{text_preview_sanit}' (순화됨)"
+            else:
+                preview_log_str = f"'{text_preview_orig}'"
 
             # 연속 요청 간의 짧은 딜레이 추가 (부하 분산)
             if i > 0:
@@ -240,6 +253,9 @@ class EmbeddingEngine:
                         for item in data.get("data", []):
                             all_embeddings.append(item.get("embedding", []))
                         success = True
+                        logger.info(
+                            f"[청크 #{chunk_idx}] 임베딩 성공 | 텍스트길이={text_len}자 | 미리보기: {preview_log_str}"
+                        )
                         break
                     else:
                         last_status = response.status_code
@@ -247,7 +263,7 @@ class EmbeddingEngine:
                         logger.warning(
                             f"[청크 #{chunk_idx}] 임베딩 API 응답 오류 "
                             f"(코드 {response.status_code}, 시도 {attempt + 1}/{max_retries}) "
-                            f"| 텍스트길이={text_len}자 | 미리보기: '{text_preview}...'"
+                            f"| 텍스트길이={text_len}자 | 미리보기: {preview_log_str}"
                         )
                         if attempt == 0:
                             logger.debug(f"[청크 #{chunk_idx}] 서버 응답: {last_body}")
@@ -255,7 +271,7 @@ class EmbeddingEngine:
                     logger.warning(
                         f"[청크 #{chunk_idx}] 임베딩 API 연결 오류 "
                         f"({e}, 시도 {attempt + 1}/{max_retries}) "
-                        f"| 텍스트길이={text_len}자"
+                        f"| 텍스트길이={text_len}자 | 미리보기: {preview_log_str}"
                     )
 
                 # 실패 시 대기 후 재시도 (Exponential Backoff: 0.5초, 1.0초, 2.0초)
@@ -265,7 +281,7 @@ class EmbeddingEngine:
                 fail_info = {
                     "chunk_idx": chunk_idx,
                     "text_len": text_len,
-                    "preview": text_preview,
+                    "preview": text_preview_orig,
                     "status": last_status,
                     "server_response": last_body,
                 }
@@ -273,12 +289,12 @@ class EmbeddingEngine:
                 logger.warning(
                     f"[청크 #{chunk_idx}] llama 서버 최종 실패. "
                     f"sentence-transformers 폴백 시도... "
-                    f"| 텍스트길이={text_len}자 | 미리보기: '{text_preview}...'"
+                    f"| 텍스트길이={text_len}자 | 미리보기: {preview_log_str}"
                 )
                 try:
                     fallback_embs = self._fallback_embed_single_batch(batch)
                     all_embeddings.extend(fallback_embs)
-                    logger.info(f"[청크 #{chunk_idx}] sentence-transformers 폴백 성공")
+                    logger.info(f"[청크 #{chunk_idx}] sentence-transformers 폴백 성공 | 미리보기: {preview_log_str}")
                 except Exception as fb_err:
                     logger.error(f"[청크 #{chunk_idx}] 폴백도 실패: {fb_err}. 0-벡터로 채웁니다.")
                     for _ in batch:
