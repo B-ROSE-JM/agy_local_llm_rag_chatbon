@@ -95,6 +95,49 @@ def load_documents_from_directory(
     return all_pages
 
 
+def _sanitize_text(text: str) -> str:
+    """
+    추출된 텍스트에서 임베딩 오류를 유발할 수 있는 문제 요소를 정리합니다.
+    
+    - 제어 문자 (\\x00-\\x08, \\x0b-\\x0c, \\x0e-\\x1f) 제거
+    - 바이너리 잔류물 / 깨진 유니코드 제거
+    - 과도한 연속 공백·줄바꿈 정리
+    - 의미 없는 특수문자 반복 패턴 제거
+    """
+    import re
+    import unicodedata
+
+    if not text:
+        return ""
+
+    # 1) NULL 바이트 및 제어 문자 제거 (탭·줄바꿈·캐리지리턴 제외)
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+
+    # 2) 서로게이트 문자 및 깨진 유니코드 제거
+    text = text.encode('utf-8', errors='ignore').decode('utf-8', errors='ignore')
+
+    # 3) 유니코드 카테고리 기반 — 제어문자(Cc), 비할당(Cn), 서로게이트(Cs) 제거
+    text = ''.join(
+        ch for ch in text
+        if unicodedata.category(ch) not in ('Cc', 'Cs')
+        or ch in ('\n', '\t', '\r')
+    )
+
+    # 4) 의미 없는 특수문자 반복 패턴 제거 (예: ●●●, ■■■, ▶▶▶, ∗∗∗ 등 3개 이상)
+    text = re.sub(r'([^\w\s])\1{2,}', r'\1', text)
+
+    # 5) 연속 공백 정리 (줄바꿈은 보존)
+    text = re.sub(r'[^\S\n]+', ' ', text)
+
+    # 6) 연속 빈 줄 정리 (3개 이상 → 2개로)
+    text = re.sub(r'\n{3,}', '\n\n', text)
+
+    # 7) 앞뒤 공백 제거
+    text = text.strip()
+
+    return text
+
+
 def _load_pdf(path: Path) -> List[DocumentPage]:
     """
     PyMuPDF(fitz)를 사용하여 PDF를 페이지 단위로 파싱합니다.
@@ -112,13 +155,26 @@ def _load_pdf(path: Path) -> List[DocumentPage]:
 
         for page_num in range(total_pages):
             page = doc[page_num]
-            text = page.get_text("text")
+            raw_text = page.get_text("text")
+
+            # 텍스트 전처리: 깨진 문자, 바이너리 잔류물 등 정리
+            cleaned_text = _sanitize_text(raw_text)
 
             # 빈 페이지 스킵 (이미지만 있는 페이지 등)
-            cleaned_text = text.strip()
             if not cleaned_text:
                 logger.debug(
                     f"  {file_name} 페이지 {page_num + 1}: 텍스트 없음 (스킵)"
+                )
+                continue
+
+            # 정리 후에도 의미 있는 텍스트가 너무 적으면 스킵 (깨진 OCR 잔해 등)
+            printable_ratio = sum(
+                1 for c in cleaned_text if c.isalnum() or c.isspace()
+            ) / max(len(cleaned_text), 1)
+            if printable_ratio < 0.3:
+                logger.warning(
+                    f"  {file_name} 페이지 {page_num + 1}: "
+                    f"의미 있는 텍스트 비율 낮음 ({printable_ratio:.1%}), 스킵"
                 )
                 continue
 
@@ -203,7 +259,7 @@ def _load_docx(path: Path) -> List[DocumentPage]:
 
             if has_page_break and current_page_texts:
                 # 현재 페이지 저장
-                page_text = "\n".join(current_page_texts).strip()
+                page_text = _sanitize_text("\n".join(current_page_texts))
                 if page_text:
                     meta = {"format": "docx"}
                     meta.update(doc_metadata)
@@ -228,7 +284,7 @@ def _load_docx(path: Path) -> List[DocumentPage]:
 
         # 마지막 페이지 저장
         if current_page_texts:
-            page_text = "\n".join(current_page_texts).strip()
+            page_text = _sanitize_text("\n".join(current_page_texts))
             if page_text:
                 meta = {"format": "docx"}
                 meta.update(doc_metadata)

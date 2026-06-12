@@ -18,7 +18,7 @@ EMBEDDING_SERVER_URL = "http://127.0.0.1:8081/v1"
 USE_EMBEDDING_SERVER = False  # 임베딩 전용 서버 사용 여부 (llama 서버 없이 sentence-transformers 직접 사용)
 
 # ── 임베딩 설정 ──
-EMBEDDING_FALLBACK_MODEL = "intfloat/multilingual-e5-large"
+EMBEDDING_FALLBACK_MODEL = "C:/models/embeddings/multilingual-e5-large"
 
 # ── ChromaDB 설정 ──
 CHROMADB_PERSIST_DIR = PROJECT_ROOT / "data" / "chromadb"
