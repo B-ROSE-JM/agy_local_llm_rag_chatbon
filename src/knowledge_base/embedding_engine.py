@@ -259,14 +259,16 @@ class EmbeddingEngine:
                         break
                     else:
                         last_status = response.status_code
-                        last_body = response.text[:300]  # 서버 응답 본문 (최대 300자)
+                        last_body = response.text[:500]  # 서버 응답 본문 (최대 500자)
+                        hint = ""
+                        if response.status_code == 500:
+                            hint = " (도움말: llama-server의 컨텍스트 크기(-c) 제한 초과, 모델 파일 손상, 혹은 빈 입력 오류일 수 있습니다.)"
                         logger.warning(
                             f"[청크 #{chunk_idx}] 임베딩 API 응답 오류 "
-                            f"(코드 {response.status_code}, 시도 {attempt + 1}/{max_retries}) "
-                            f"| 텍스트길이={text_len}자 | 미리보기: {preview_log_str}"
+                            f"(코드 {response.status_code}, 시도 {attempt + 1}/{max_retries}){hint} "
+                            f"| 텍스트길이={text_len}자 | 미리보기: {preview_log_str} "
+                            f"| 서버 응답: {last_body}"
                         )
-                        if attempt == 0:
-                            logger.debug(f"[청크 #{chunk_idx}] 서버 응답: {last_body}")
                 except Exception as e:
                     logger.warning(
                         f"[청크 #{chunk_idx}] 임베딩 API 연결 오류 "
