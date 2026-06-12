@@ -1,0 +1,224 @@
+"""
+임베딩 엔진: 텍스트를 벡터로 변환합니다.
+llama.cpp /v1/embeddings → sentence-transformers → TF-IDF 순으로 폴백합니다.
+
+patent_analysis_local의 EmbeddingEngine을 기반으로 연구노트 Q&A에 맞게 조정했습니다.
+"""
+import hashlib
+import httpx
+import numpy as np
+from pathlib import Path
+from typing import List, Optional
+from src.utils.logging_utils import get_logger
+
+logger = get_logger("embedding_engine")
+
+DEFAULT_ENDPOINT = "http://127.0.0.1:8080/v1"
+BATCH_SIZE = 8
+
+
+class EmbeddingEngine:
+    """로컬 임베딩 엔진. llama.cpp → sentence-transformers → TF-IDF 폴백."""
+
+    def __init__(
+        self,
+        base_url: str = DEFAULT_ENDPOINT,
+        model: str = "local-model",
+        fallback_model_name: str = "intfloat/multilingual-e5-large",
+    ):
+        self.base_url = base_url
+        self.model = model
+        self.fallback_model_name = fallback_model_name
+        self._fallback_model = None
+        self._use_fallback = False
+        self._use_tfidf = False
+        self._tfidf_vectorizer = None
+        self._embedding_dim: Optional[int] = None
+
+    def _check_llama_embedding_support(self) -> bool:
+        """llama.cpp 서버의 임베딩 엔드포인트 지원 여부를 확인합니다."""
+        try:
+            response = httpx.post(
+                f"{self.base_url}/embeddings",
+                json={"model": self.model, "input": "test"},
+                timeout=10.0,
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if "data" in data and len(data["data"]) > 0:
+                    emb = data["data"][0].get("embedding", [])
+                    if len(emb) > 0:
+                        self._embedding_dim = len(emb)
+                        logger.info(f"llama.cpp 임베딩 지원 확인. 차원: {self._embedding_dim}")
+                        return True
+            logger.warning(f"llama.cpp /v1/embeddings 비정상 응답: {response.status_code}")
+            return False
+        except Exception as e:
+            logger.warning(f"llama.cpp 임베딩 엔드포인트 사용 불가: {e}")
+            return False
+
+    def _load_fallback_model(self):
+        """sentence-transformers 폴백 모델을 로드합니다."""
+        if self._fallback_model is not None:
+            return
+        try:
+            from sentence_transformers import SentenceTransformer
+            import os
+
+            logger.info(f"폴백 임베딩 모델 로딩: {self.fallback_model_name}")
+            is_offline = os.environ.get("HF_HUB_OFFLINE") == "1"
+
+            try:
+                self._fallback_model = SentenceTransformer(
+                    self.fallback_model_name, local_files_only=True
+                )
+                logger.info("로컬 캐시에서 sentence-transformers 모델 로드 성공")
+            except Exception:
+                if is_offline:
+                    raise OSError("오프라인 모드. 로컬 모델 없음.")
+                import socket
+                logger.info("로컬 캐시 없음. huggingface.co 연결 확인 중...")
+                try:
+                    socket.create_connection(("huggingface.co", 443), timeout=3.0).close()
+                    logger.info("인터넷 연결 확인. 모델 다운로드 중...")
+                    self._fallback_model = SentenceTransformer(
+                        self.fallback_model_name, local_files_only=False
+                    )
+                except Exception as conn_err:
+                    raise OSError(f"huggingface.co 연결 불가: {conn_err}")
+
+            test_emb = self._fallback_model.encode(["test"])
+            self._embedding_dim = test_emb.shape[1]
+            logger.info(f"폴백 모델 로드 완료. 차원: {self._embedding_dim}")
+
+        except ImportError:
+            raise ImportError(
+                "sentence-transformers가 필요합니다. "
+                "설치: pip install sentence-transformers"
+            )
+
+    def _load_tfidf_vectorizer(self):
+        """TF-IDF 벡터라이저를 로드하거나 생성합니다."""
+        import pickle
+        from sklearn.feature_extraction.text import TfidfVectorizer
+
+        tfidf_path = Path("data/tfidf_vectorizer.pkl")
+        if tfidf_path.exists():
+            try:
+                with open(tfidf_path, "rb") as f:
+                    self._tfidf_vectorizer = pickle.load(f)
+                self._embedding_dim = len(self._tfidf_vectorizer.vocabulary_)
+                logger.info(f"기존 TF-IDF 벡터라이저 로드. 차원: {self._embedding_dim}")
+            except Exception as e:
+                logger.error(f"TF-IDF 벡터라이저 로드 오류: {e}")
+
+        if self._tfidf_vectorizer is None:
+            self._embedding_dim = 1024
+            self._tfidf_vectorizer = TfidfVectorizer(
+                max_features=self._embedding_dim,
+                ngram_range=(1, 2),
+            )
+            logger.info("새 TF-IDF 벡터라이저 생성 (인제스션 시 학습 예정)")
+
+    def initialize(self) -> bool:
+        """
+        임베딩 엔진을 초기화합니다.
+        llama.cpp → sentence-transformers → TF-IDF 순으로 시도합니다.
+        """
+        if self._check_llama_embedding_support():
+            self._use_fallback = False
+            self._use_tfidf = False
+            logger.info("llama.cpp 임베딩 사용")
+            return True
+        else:
+            logger.info("llama.cpp 사용 불가. sentence-transformers 시도...")
+            try:
+                self._load_fallback_model()
+                self._use_fallback = True
+                self._use_tfidf = False
+                logger.info("sentence-transformers 임베딩 사용")
+                return True
+            except Exception as e:
+                logger.warning(f"sentence-transformers 실패: {e}. TF-IDF 폴백...")
+                self._use_fallback = False
+                self._use_tfidf = True
+                self._load_tfidf_vectorizer()
+                return True
+
+    @property
+    def embedding_dimension(self) -> Optional[int]:
+        return self._embedding_dim
+
+    def embed_texts(self, texts: List[str]) -> np.ndarray:
+        """텍스트 목록을 벡터로 변환합니다."""
+        if not texts:
+            return np.array([])
+
+        if self._use_tfidf:
+            return self._embed_with_tfidf(texts)
+        elif self._use_fallback:
+            return self._embed_with_sentence_transformers(texts)
+        else:
+            return self._embed_with_llama(texts)
+
+    def embed_single(self, text: str) -> np.ndarray:
+        """단일 텍스트를 벡터로 변환합니다."""
+        result = self.embed_texts([text])
+        return result[0] if len(result) > 0 else np.array([])
+
+    def _embed_with_llama(self, texts: List[str]) -> np.ndarray:
+        """llama.cpp /v1/embeddings로 임베딩을 생성합니다."""
+        all_embeddings = []
+        for i in range(0, len(texts), BATCH_SIZE):
+            batch = texts[i: i + BATCH_SIZE]
+            try:
+                response = httpx.post(
+                    f"{self.base_url}/embeddings",
+                    json={"model": self.model, "input": batch},
+                    timeout=60.0,
+                )
+                response.raise_for_status()
+                data = response.json()
+                for item in data.get("data", []):
+                    all_embeddings.append(item.get("embedding", []))
+            except Exception as e:
+                logger.error(f"임베딩 배치 {i} 오류: {e}")
+                for _ in batch:
+                    all_embeddings.append([0.0] * (self._embedding_dim or 768))
+        return np.array(all_embeddings, dtype=np.float32)
+
+    def _embed_with_sentence_transformers(self, texts: List[str]) -> np.ndarray:
+        """sentence-transformers로 임베딩을 생성합니다."""
+        if self._fallback_model is None:
+            self._load_fallback_model()
+        logger.info(f"sentence-transformers로 {len(texts)}개 텍스트 임베딩 중...")
+        embeddings = self._fallback_model.encode(
+            texts, batch_size=32, show_progress_bar=len(texts) > 50,
+            normalize_embeddings=True,
+        )
+        return np.array(embeddings, dtype=np.float32)
+
+    def _embed_with_tfidf(self, texts: List[str]) -> np.ndarray:
+        """TF-IDF로 벡터를 생성합니다."""
+        import pickle
+        if self._tfidf_vectorizer is None:
+            self._load_tfidf_vectorizer()
+
+        is_fitted = hasattr(self._tfidf_vectorizer, "vocabulary_")
+        if not is_fitted:
+            logger.info("TF-IDF 벡터라이저 학습 중...")
+            vectors = self._tfidf_vectorizer.fit_transform(texts)
+            self._embedding_dim = len(self._tfidf_vectorizer.vocabulary_)
+            tfidf_path = Path("data/tfidf_vectorizer.pkl")
+            tfidf_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(tfidf_path, "wb") as f:
+                pickle.dump(self._tfidf_vectorizer, f)
+        else:
+            vectors = self._tfidf_vectorizer.transform(texts)
+
+        return vectors.toarray().astype(np.float32)
+
+    @staticmethod
+    def text_hash(text: str) -> str:
+        """텍스트의 MD5 해시를 생성합니다."""
+        return hashlib.md5(text.encode("utf-8")).hexdigest()

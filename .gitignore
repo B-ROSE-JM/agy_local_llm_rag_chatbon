@@ -1,0 +1,24 @@
+# Python cache
+__pycache__/
+*/__pycache__/
+*/*/__pycache__/
+*.py[cod]
+*$py.class
+
+# Streamlit secrets (if any)
+.streamlit/secrets.toml
+
+# IDE settings
+.vscode/
+.idea/
+
+# Local database, logs and cache
+data/chromadb/
+data/logs/
+data/tfidf_vectorizer.pkl
+
+# Virtual environment
+.venv/
+venv/
+env/
+ENV/
